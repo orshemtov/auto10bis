@@ -9,7 +9,8 @@ wheels/
 # Virtual environments
 .venv
 
-profile/
-
 .env
+
+profile/
+screenshots/
 

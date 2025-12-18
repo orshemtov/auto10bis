@@ -1,7 +1,8 @@
-from playwright.async_api import async_playwright
-import re
 import asyncio
-from playwright.async_api import Page
+import datetime
+import re
+
+from playwright.async_api import BrowserContext, Page, async_playwright
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -10,11 +11,12 @@ class Settings(BaseSettings):
 
     base_url: str
     item_url: str
+    item_price: float
     email: str
     first_name: str
-
-
-settings = Settings()  # type: ignore
+    user_data_dir: str = "./profile"
+    headless: bool = True
+    dry_run: bool = True
 
 
 # TODO: Make this more reliable
@@ -95,8 +97,10 @@ async def parse_transactions_report(page: Page) -> dict[str, float]:
     }
 
 
-async def purchase_item(page: Page, item_url: str) -> None:
+async def add_to_cart(page: Page, item_url: str) -> None:
     await page.goto(item_url, wait_until="domcontentloaded")
+
+    # TODO: Verify that item page was loaded correctly
 
     add_btn = page.get_by_role("button", name=re.compile(r"^Add item"))
     await add_btn.wait_for(state="visible", timeout=15_000)
@@ -106,34 +110,75 @@ async def purchase_item(page: Page, item_url: str) -> None:
     await payment_btn.wait_for(state="visible", timeout=15_000)
     await payment_btn.click()
 
-    # Do the payment
 
-    # TODO: Click 'Place order (₪200.00)'
+# TODO:Verify
+async def checkout(page: Page) -> None:
+    add_btn = page.get_by_role("button", name=re.compile(r"^Place order"))
+    await add_btn.wait_for(state="visible", timeout=15_000)
+    await add_btn.click()
 
     # Take a screenshot
+    t = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    await page.screenshot(path=f"./screenshots/order-{t}.png")
+
     # Verify 'Coupon ordered successfully' message
+    await page.get_by_text("Coupon ordered successfully").wait_for(
+        state="visible", timeout=10000
+    )
 
-    # Save the result
-    # 'Print voucher' button - save as PDF
+    # TODO: Save the result
+    # There is a 'Print voucher' button - save as PDF
 
 
-async def main():
-    async with async_playwright() as p:
+async def run(
+    context: BrowserContext,
+    base_url: str,
+    email: str,
+    first_name: str,
+    item_url: str,
+    item_price: float,
+    dry_run: bool = True,
+) -> None:
+    page = await context.new_page()
+
+    await page.goto(base_url, wait_until="domcontentloaded")
+    await ensure_logged_in(page, email)
+    await open_transactions_report(page, first_name)
+
+    result = await parse_transactions_report(page)
+    print(result)
+
+    if result["daily_limit"] < item_price:
+        print("Not enough balance to proceed.")
+        return
+
+    await add_to_cart(page, item_url)
+
+    if dry_run:
+        print("Dry run enabled, skipping checkout.")
+        return
+
+    await checkout(page)
+
+
+async def main() -> None:
+    settings = Settings()  # type: ignore
+
+    async with async_playwright() as playwright:
         # browser = await p.chromium.launch(headless=False)
-        context = await p.chromium.launch_persistent_context(
-            user_data_dir="./profile",
-            headless=False,
+        context = await playwright.chromium.launch_persistent_context(
+            user_data_dir=settings.user_data_dir,
+            headless=settings.headless,
         )
 
-        page = await context.new_page()
-
-        await page.goto(settings.base_url, wait_until="domcontentloaded")
-        await ensure_logged_in(page, settings.email)
-        await open_transactions_report(page, settings.first_name)
-        result = await parse_transactions_report(page)
-        print(result)
-
-        await purchase_item(page, settings.item_url)
+        await run(
+            context,
+            settings.base_url,
+            settings.email,
+            settings.first_name,
+            settings.item_url,
+            settings.item_price,
+        )
 
         # For debugging purposes
         await asyncio.sleep(30)
