@@ -1,5 +1,7 @@
 # README
 
+Automation for purchasing 10bis vouchers for Shufersal, intended to run daily until budget exhausted for the month.
+
 ## Pre-requisites
 
 - 10bis account, with MFA enabled (login with email + OTP SMS)
