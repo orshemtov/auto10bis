@@ -13,17 +13,20 @@ class Settings(BaseSettings):
     item_url: str
     item_price: float
     email: str
-    first_name: str
     user_data_dir: str = "./profile"
-    headless: bool = True
+    headless: bool = False
     dry_run: bool = True
 
 
 # TODO: Make this more reliable
 async def is_logged_in(page: Page) -> bool:
-    login = page.get_by_role("button", name="Login")
-    await login.wait_for(state="visible", timeout=10000)
-    return not await login.is_visible()
+    name = re.compile(r"^Hi,")
+    menu_btn = page.get_by_role("button", name=name)
+    try:
+        await menu_btn.wait_for(state="visible", timeout=5000)
+        return True
+    except:
+        return False
 
 
 async def ensure_logged_in(page: Page, email: str) -> None:
@@ -52,9 +55,8 @@ async def ensure_logged_in(page: Page, email: str) -> None:
     await page.get_by_role("button", name="Accept").click()
 
 
-async def open_transactions_report(page: Page, first_name: str) -> None:
-    # TODO: Make selector better later on
-    name = "Hi, " + first_name
+async def parse_transactions_report(page: Page) -> dict[str, float]:
+    name = re.compile(r"^Hi,")
     menu_btn = page.get_by_role("button", name=name)
     await menu_btn.wait_for(state="visible", timeout=30000)
     await menu_btn.click()
@@ -65,14 +67,14 @@ async def open_transactions_report(page: Page, first_name: str) -> None:
 
     await page.wait_for_load_state("domcontentloaded")
 
-
-async def parse_transactions_report(page: Page) -> dict[str, float]:
     def parse_amount(text: str) -> float:
         # Handles: ₪400, ₪ 400, 400₪
-        m = re.search(r"₪\s*([0-9]+)", text) or re.search(r"([0-9]+)\s*₪", text)
-        if not m:
+        pattern_1 = r"₪\s*([0-9]+)"
+        pattern_2 = r"([0-9]+)\s*₪"
+        matches = re.search(pattern_1, text) or re.search(pattern_2, text)
+        if not matches:
             raise ValueError(f"Could not parse amount from text: {text}")
-        return float(m.group(1))
+        return float(matches.group(1))
 
     async def value_by_label(page: Page, label: str) -> float:
         label_loc = page.get_by_text(label, exact=True)
@@ -134,7 +136,6 @@ async def run(
     context: BrowserContext,
     base_url: str,
     email: str,
-    first_name: str,
     item_url: str,
     item_price: float,
     dry_run: bool = True,
@@ -143,7 +144,6 @@ async def run(
 
     await page.goto(base_url, wait_until="domcontentloaded")
     await ensure_logged_in(page, email)
-    await open_transactions_report(page, first_name)
 
     result = await parse_transactions_report(page)
     print(result)
@@ -158,6 +158,9 @@ async def run(
         print("Dry run enabled, skipping checkout.")
         return
 
+    # TODO: For debugging purposes
+    await asyncio.sleep(30)
+
     await checkout(page)
 
 
@@ -165,7 +168,6 @@ async def main() -> None:
     settings = Settings()  # type: ignore
 
     async with async_playwright() as playwright:
-        # browser = await p.chromium.launch(headless=False)
         context = await playwright.chromium.launch_persistent_context(
             user_data_dir=settings.user_data_dir,
             headless=settings.headless,
@@ -175,16 +177,15 @@ async def main() -> None:
             context,
             settings.base_url,
             settings.email,
-            settings.first_name,
             settings.item_url,
             settings.item_price,
         )
-
-        # For debugging purposes
-        await asyncio.sleep(30)
 
         await context.close()
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("Exiting...")
