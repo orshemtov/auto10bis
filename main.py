@@ -18,7 +18,6 @@ class Settings(BaseSettings):
     dry_run: bool = True
 
 
-# TODO: Make this more reliable
 async def is_logged_in(page: Page) -> bool:
     name = re.compile(r"^Hi,")
     menu_btn = page.get_by_role("button", name=name)
@@ -68,26 +67,28 @@ async def parse_transactions_report(page: Page) -> dict[str, float]:
     await page.wait_for_load_state("domcontentloaded")
 
     def parse_amount(text: str) -> float:
-        # Handles: ₪400, ₪ 400, 400₪
-        pattern_1 = r"₪\s*([0-9]+)"
-        pattern_2 = r"([0-9]+)\s*₪"
+        pattern_1 = r"₪\s*([0-9]+)"  # ₪400, ₪ 400
+        pattern_2 = r"([0-9]+)\s*₪"  # 400₪
         matches = re.search(pattern_1, text) or re.search(pattern_2, text)
         if not matches:
             raise ValueError(f"Could not parse amount from text: {text}")
         return float(matches.group(1))
 
-    async def value_by_label(page: Page, label: str) -> float:
+    async def get_value_by_label(page: Page, label: str) -> float:
         label_loc = page.get_by_text(label, exact=True)
+
+        # TODO: We assume the value is in the parent container
         container = label_loc.locator("..")
+
         txt = await container.inner_text()
         return parse_amount(txt)
 
-    monthly_limit = await value_by_label(page, "Monthly limit")
-    daily_limit = await value_by_label(page, "Daily limit")
-    spent_this_month = await value_by_label(page, "Spent this month")
-    spent_today = await value_by_label(page, "Spent today")
-    monthly_balance = await value_by_label(page, "Monthly balance")
-    daily_balance = await value_by_label(page, "Daily balance")
+    monthly_limit = await get_value_by_label(page, "Monthly limit")
+    daily_limit = await get_value_by_label(page, "Daily limit")
+    spent_this_month = await get_value_by_label(page, "Spent this month")
+    spent_today = await get_value_by_label(page, "Spent today")
+    monthly_balance = await get_value_by_label(page, "Monthly balance")
+    daily_balance = await get_value_by_label(page, "Daily balance")
 
     return {
         "monthly_limit": monthly_limit,
@@ -119,14 +120,15 @@ async def checkout(page: Page) -> None:
     await add_btn.wait_for(state="visible", timeout=15_000)
     await add_btn.click()
 
-    # Take a screenshot
-    t = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-    await page.screenshot(path=f"./screenshots/order-{t}.png")
-
-    # Verify 'Coupon ordered successfully' message
+    # TODO: Wait for the order confirmation page to load
+    # TODO: Verify 'Coupon ordered successfully' message
     await page.get_by_text("Coupon ordered successfully").wait_for(
         state="visible", timeout=10000
     )
+
+    # Take a screenshot
+    t = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    await page.screenshot(path=f"./screenshots/order-{t}.png")
 
     # TODO: Save the result
     # There is a 'Print voucher' button - save as PDF
