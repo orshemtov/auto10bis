@@ -104,8 +104,6 @@ def should_skip(info: BudgetInfo, item_price: float) -> bool:
 async def add_to_cart(page: Page, item_url: str) -> None:
     await page.goto(item_url, wait_until="domcontentloaded")
 
-    # TODO: Verify that item page was loaded correctly
-
     add_btn = page.get_by_role("button", name=re.compile(r"^Add item"))
     await add_btn.wait_for(state="visible", timeout=15_000)
     await add_btn.click()
@@ -115,7 +113,6 @@ async def add_to_cart(page: Page, item_url: str) -> None:
     await payment_btn.click()
 
 
-# TODO:Verify
 async def checkout(page: Page) -> None:
     add_btn = page.get_by_role("button", name=re.compile(r"^Place order"))
     await add_btn.wait_for(state="visible", timeout=15_000)
