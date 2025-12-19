@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     dry_run: bool = True
 
 
+# TODO: Change print statements to proper logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
@@ -92,6 +93,7 @@ async def parse_transactions_report(page: Page) -> dict[str, float]:
         txt = await container.inner_text()
         return parse_amount(txt)
 
+    # TODO: Budget info is not getting parsed correctly
     monthly_limit = await get_value_by_label(page, "Monthly limit")
     daily_limit = await get_value_by_label(page, "Daily limit")
     spent_this_month = await get_value_by_label(page, "Spent this month")
