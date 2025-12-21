@@ -1,6 +1,7 @@
 import asyncio
 import datetime
 import re
+from pathlib import Path
 
 from loguru import logger
 from playwright.async_api import BrowserContext, Page, async_playwright
@@ -8,21 +9,31 @@ from pydantic import BaseModel
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from log import setup_logger
-from utils import get_value_by_label
+from utils import find_project_root, parse_amount
 
 setup_logger()
+
+
+project_root = find_project_root()
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
-    base_url: str
-    item_url: str
-    item_price: float
+    base_url: str = "https://www.10bis.co.il/next/en/"
+
+    # The default is a Shufersal voucher worth 200 ILS
+    item_url: str = "https://www.10bis.co.il/next/en/restaurants/menu/delivery/26698/shufersal/?dishId=6552647"
+    item_price: float = 200.00
+
     email: str
-    user_data_dir: str = "./profile"
-    headless: bool = False
-    dry_run: bool = True
+
+    user_data_dir: Path = project_root / "profile"
+    screenshots_dir: Path = project_root / "screenshots"
+    orders_dir: Path = project_root / "orders"
+
+    headless: bool = True
+    dry_run: bool = False
 
 
 class BudgetInfo(BaseModel):
@@ -48,6 +59,8 @@ async def ensure_logged_in(page: Page, email: str) -> None:
         logger.info("We are already logged in!")
         return
 
+    logger.info("Not logged in, performing login...")
+
     await page.get_by_role("button", name="Login").click()
 
     # Login form is now visible
@@ -61,13 +74,45 @@ async def ensure_logged_in(page: Page, email: str) -> None:
     # Wait up to 60 seconds for OTP input
     await otp_input.wait_for(state="visible", timeout=60000)
 
-    otp = input("Enter the OTP sent to your email or phone: ")
+    logger.info("Please check your email or phone for the OTP code.")
+
+    otp = input("Enter the OTP code: ")
     await otp_input.fill(otp)
 
     await page.get_by_role("button", name="Accept").click()
 
 
+async def get_value_by_label(page: Page, label: str) -> float:
+    """
+    Extract the amount value that precedes a label in the budget cards.
+
+    Args:
+        label: The readable label text (e.g., "Monthly limit", "Daily balance")
+
+    Returns:
+        The amount as a float
+
+    DOM structure:
+        <div class="Sum-..."><div>₪1000</div></div>
+        <div class="Text-...">Monthly limit</div>
+    """
+    label_loc = page.get_by_text(label, exact=True)
+    await label_loc.wait_for(state="visible", timeout=5000)
+
+    # The amount is in the immediately preceding sibling element
+    amount_div = label_loc.locator("xpath=preceding-sibling::*[1]")
+
+    # Extract the text (e.g., "₪1000")
+    # Parse and return the numeric value
+    txt = await amount_div.inner_text()
+    amount = parse_amount(txt)
+
+    return amount
+
+
 async def parse_transactions_report(page: Page) -> BudgetInfo:
+    logger.info("Parsing transactions report...")
+
     name = re.compile(r"^Hi,")
     menu_btn = page.get_by_role("button", name=name)
     await menu_btn.wait_for(state="visible", timeout=30000)
@@ -82,10 +127,12 @@ async def parse_transactions_report(page: Page) -> BudgetInfo:
     monthly_balance = await get_value_by_label(page, "Monthly balance")
     daily_balance = await get_value_by_label(page, "Daily balance")
 
-    return BudgetInfo(
+    budget_info = BudgetInfo(
         monthly_balance=monthly_balance,
         daily_balance=daily_balance,
     )
+
+    return budget_info
 
 
 def should_skip(info: BudgetInfo, item_price: float) -> bool:
@@ -113,7 +160,7 @@ async def add_to_cart(page: Page, item_url: str) -> None:
     await payment_btn.click()
 
 
-async def checkout(page: Page) -> None:
+async def checkout(page: Page, screenshots_dir: Path, orders_dir: Path) -> None:
     add_btn = page.get_by_role("button", name=re.compile(r"^Place order"))
     await add_btn.wait_for(state="visible", timeout=15_000)
     await add_btn.click()
@@ -126,11 +173,15 @@ async def checkout(page: Page) -> None:
     t = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
 
     # Screenshot the confirmation page
-    await page.screenshot(path=f"./screenshots/order-{t}.png")
+    screenshot_path = screenshots_dir / f"order-{t}.png"
+    await page.screenshot(path=screenshot_path)
+    logger.info(f"Saved screenshot to {screenshot_path}")
 
     # Save the result
+    pdf_path = orders_dir / f"order-{t}.pdf"
     await page.emulate_media(media="print")
-    await page.pdf(path=f"./orders/order-{t}.pdf", format="A4", print_background=True)
+    await page.pdf(path=pdf_path, format="A4", print_background=True)
+    logger.info(f"Saved order PDF to {pdf_path}")
 
 
 async def run(
@@ -140,10 +191,14 @@ async def run(
     item_url: str,
     item_price: float,
     dry_run: bool,
+    screenshots_dir: Path,
+    orders_dir: Path,
 ) -> None:
     page = await context.new_page()
 
     await page.goto(base_url, wait_until="domcontentloaded")
+    logger.info("Loaded base URL: ", page.title())
+
     await ensure_logged_in(page, email)
 
     result = await parse_transactions_report(page)
@@ -154,19 +209,23 @@ async def run(
         return
 
     await add_to_cart(page, item_url)
+    logger.info("Item added to cart.")
 
     if dry_run:
-        logger.info("Dry run enabled, skipping checkout.")
+        logger.info("Dry run enabled, skipping checkout...")
         return
 
     logger.info("Checking out...")
-    await checkout(page)
+    await checkout(page, screenshots_dir, orders_dir)
+
+    logger.info("Order completed successfully.")
 
 
 async def main() -> None:
     settings = Settings()  # type: ignore
 
     logger.info("Starting purchase bot...")
+
     logger.info(f"Item URL: {settings.item_url}")
     logger.info(f"Item Price: {settings.item_price}")
 
@@ -178,11 +237,13 @@ async def main() -> None:
 
         await run(
             context,
-            settings.base_url,
-            settings.email,
-            settings.item_url,
-            settings.item_price,
+            base_url=settings.base_url,
+            email=settings.email,
+            item_url=settings.item_url,
+            item_price=settings.item_price,
             dry_run=settings.dry_run,
+            screenshots_dir=settings.screenshots_dir,
+            orders_dir=settings.orders_dir,
         )
 
         await context.close()
