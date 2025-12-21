@@ -128,10 +128,9 @@ async def checkout(page: Page) -> None:
     # Screenshot the confirmation page
     await page.screenshot(path=f"./screenshots/order-{t}.png")
 
-    # TODO: Save the result
-    # There is a 'logger.info voucher' button - save as PDF
+    # Save the result
     await page.emulate_media(media="print")
-    await page.pdf(path=f"./orders/order-{t}.pdf", format="A4")
+    await page.pdf(path=f"./orders/order-{t}.pdf", format="A4", print_background=True)
 
 
 async def run(
