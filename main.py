@@ -7,9 +7,8 @@ from loguru import logger
 from playwright.async_api import BrowserContext, Page, async_playwright
 from pydantic import BaseModel
 
-from log import setup_logger
 from settings import Settings
-from utils import parse_amount
+from utils import parse_amount, setup_logger
 
 
 class BudgetInfo(BaseModel):
@@ -211,6 +210,11 @@ async def run(
 async def main() -> None:
     settings = Settings()  # type: ignore
     setup_logger(debug=settings.debug)
+
+    # Make sure the necessary directories exist
+    settings.user_data_dir.mkdir(parents=True, exist_ok=True)
+    settings.screenshots_dir.mkdir(parents=True, exist_ok=True)
+    settings.orders_dir.mkdir(parents=True, exist_ok=True)
 
     logger.info("Starting purchase bot...")
 
