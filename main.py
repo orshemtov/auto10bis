@@ -11,14 +11,15 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from log import setup_logger
 from utils import find_project_root, parse_amount
 
-setup_logger()
-
-
 project_root = find_project_root()
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+    model_config = SettingsConfigDict(
+        env_file=project_root / ".env",
+        env_file_encoding="utf-8",
+        extra="forbid",
+    )
 
     base_url: str = "https://www.10bis.co.il/next/en/"
 
@@ -34,6 +35,7 @@ class Settings(BaseSettings):
 
     headless: bool = True
     dry_run: bool = False
+    debug: bool = False
 
 
 class BudgetInfo(BaseModel):
@@ -48,7 +50,7 @@ async def is_logged_in(page: Page) -> bool:
         await menu_btn.wait_for(state="visible", timeout=5000)
         return True
     except Exception:
-        # Button not found, not logged in
+        logger.debug("Login button not found, user not logged in")
         return False
 
 
@@ -113,17 +115,20 @@ async def get_value_by_label(page: Page, label: str) -> float:
 async def parse_transactions_report(page: Page) -> BudgetInfo:
     logger.info("Parsing transactions report...")
 
+    logger.debug("Clicking user menu button...")
     name = re.compile(r"^Hi,")
     menu_btn = page.get_by_role("button", name=name)
     await menu_btn.wait_for(state="visible", timeout=30000)
     await menu_btn.click()
 
+    logger.debug("Navigating to Transactions Report...")
     transactions_report_item = page.get_by_text("Transactions Report", exact=True)
     await transactions_report_item.wait_for(state="visible", timeout=5000)
     await transactions_report_item.click()
 
     await page.wait_for_load_state("domcontentloaded")
 
+    logger.debug("Extracting budget values...")
     monthly_balance = await get_value_by_label(page, "Monthly balance")
     daily_balance = await get_value_by_label(page, "Daily balance")
 
@@ -138,33 +143,38 @@ async def parse_transactions_report(page: Page) -> BudgetInfo:
 def should_skip(info: BudgetInfo, item_price: float) -> bool:
     """Skip if budget is exceeded for the day or for the month"""
     if info.monthly_balance < item_price:
-        logger.info("Monthly budget exceeded.")
+        logger.warning("Monthly budget exceeded.")
         return True
 
     if info.daily_balance < item_price:
-        logger.info("Daily budget exceeded.")
+        logger.warning("Daily budget exceeded.")
         return True
 
     return False
 
 
 async def add_to_cart(page: Page, item_url: str) -> None:
+    logger.debug(f"Navigating to item: {item_url}")
     await page.goto(item_url, wait_until="domcontentloaded")
 
+    logger.debug("Clicking 'Add item' button...")
     add_btn = page.get_by_role("button", name=re.compile(r"^Add item"))
     await add_btn.wait_for(state="visible", timeout=15_000)
     await add_btn.click()
 
+    logger.debug("Clicking 'Proceed to payment' button...")
     payment_btn = page.get_by_role("button", name="Proceed to payment")
     await payment_btn.wait_for(state="visible", timeout=15_000)
     await payment_btn.click()
 
 
 async def checkout(page: Page, screenshots_dir: Path, orders_dir: Path) -> None:
+    logger.debug("Clicking 'Place order' button...")
     add_btn = page.get_by_role("button", name=re.compile(r"^Place order"))
     await add_btn.wait_for(state="visible", timeout=15_000)
     await add_btn.click()
 
+    logger.debug("Waiting for order confirmation...")
     await page.get_by_text("Coupon ordered successfully").wait_for(
         state="visible", timeout=10000
     )
@@ -197,12 +207,15 @@ async def run(
     page = await context.new_page()
 
     await page.goto(base_url, wait_until="domcontentloaded")
-    logger.info("Loaded base URL: ", page.title())
+    title = await page.title()
+    logger.info(f"Loaded base URL: {title}")
 
     await ensure_logged_in(page, email)
 
     result = await parse_transactions_report(page)
-    logger.info(result)
+    logger.info(
+        f"Budget - Monthly: ₪{result.monthly_balance}, Daily: ₪{result.daily_balance}"
+    )
 
     if should_skip(result, item_price):
         logger.info("Budget exceeded, skipping purchase.")
@@ -212,17 +225,18 @@ async def run(
     logger.info("Item added to cart.")
 
     if dry_run:
-        logger.info("Dry run enabled, skipping checkout...")
+        logger.warning("Dry run enabled, skipping checkout...")
         return
 
     logger.info("Checking out...")
     await checkout(page, screenshots_dir, orders_dir)
 
-    logger.info("Order completed successfully.")
+    logger.success("Order completed successfully.")
 
 
 async def main() -> None:
     settings = Settings()  # type: ignore
+    setup_logger(debug=settings.debug)
 
     logger.info("Starting purchase bot...")
 
@@ -253,4 +267,4 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        logger.info("Exiting...")
+        logger.warning("Interrupted by user, exiting...")
